@@ -251,6 +251,8 @@ lock_do_i_hold(struct lock *lock)
 {
     // Write this
 
+    KASSERT(lock);
+
     // (void)lock;  // suppress warning until code gets written
 
     // return true; // dummy until code gets written
@@ -299,22 +301,50 @@ void
 cv_wait(struct cv *cv, struct lock *lock)
 {
     // Write this
-    (void)cv;   // suppress warning until code gets written
-    (void)lock; // suppress warning until code gets written
+    // (void)cv;   // suppress warning until code gets written
+    // (void)lock; // suppress warning until code gets written
+
+    KASSERT(cv);
+    KASSERT(lock_do_i_hold(lock));
+
+    // it is fine to release the lock then go to sleep, because we aren't doing
+    // anything useful anyway
+    lock_release(lock);
+    spinlock_acquire(&lock->lk_lock);
+    wchan_sleep(lock->lk_wchan, &lock->lk_lock);
+
+    // the order here seems important, need further understanding/investigation
+    // TODO..
+    spinlock_release(&lock->lk_lock);
+    lock_acquire(lock);
 }
 
 void
 cv_signal(struct cv *cv, struct lock *lock)
 {
     // Write this
-    (void)cv;   // suppress warning until code gets written
-    (void)lock; // suppress warning until code gets written
+    // (void)cv;   // suppress warning until code gets written
+    // (void)lock; // suppress warning until code gets written
+
+    KASSERT(cv);
+    KASSERT(lock_do_i_hold(lock));
+
+    spinlock_acquire(&lock->lk_lock);
+    wchan_wakeone(lock->lk_wchan, &lock->lk_lock);
+    spinlock_release(&lock->lk_lock);
 }
 
 void
 cv_broadcast(struct cv *cv, struct lock *lock)
 {
     // Write this
-    (void)cv;   // suppress warning until code gets written
-    (void)lock; // suppress warning until code gets written
+    // (void)cv;   // suppress warning until code gets written
+    // (void)lock; // suppress warning until code gets written
+
+    KASSERT(cv);
+    KASSERT(lock_do_i_hold(lock));
+
+    spinlock_acquire(&lock->lk_lock);
+    wchan_wakeall(lock->lk_wchan, &lock->lk_lock);
+    spinlock_release(&lock->lk_lock);
 }
