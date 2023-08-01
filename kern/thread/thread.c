@@ -1045,6 +1045,22 @@ wchan_sleep(struct wchan *wc, struct spinlock *lk)
 	spinlock_acquire(lk);
 }
 
+void
+loose_wchan_sleep(struct wchan *wc, struct spinlock *lk)
+{
+	/* may not sleep in an interrupt handler */
+	KASSERT(!curthread->t_in_interrupt);
+
+	/* must hold the spinlock */
+	KASSERT(spinlock_do_i_hold(lk));
+
+	/* must not hold other spinlocks */
+	KASSERT(curcpu->c_spinlocks == 1);
+
+	thread_switch(S_SLEEP, wc, lk);
+}
+
+
 /*
  * Wake up one thread sleeping on a wait channel.
  */

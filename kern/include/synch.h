@@ -36,6 +36,10 @@
 
 #include <spinlock.h>
 
+/*************** forward decclarations ***************/
+/* Reader-Writer Lock Reqeust Status */
+typedef enum status { FREE, READ, WRITE } status_t;
+
 /*
  * Dijkstra-style semaphore.
  *
@@ -152,6 +156,45 @@ struct rwlock {
     char *rwlock_name;
     // add what you need here
     // (don't forget to mark things volatile as needed)
+
+    // lock to protect the entire datastructure
+    struct lock *lock;
+
+    // active infos
+    volatile status_t status;
+    volatile unsigned total_num_writers;
+
+    // TODO.. Perhaps should use unions here?
+    struct reader_q *active_readers;
+    struct thread *active_writer;
+
+    // the main datastructure, the requests queue
+    struct request *req_head;
+    struct request *req_tail;
+
+    // misc
+    volatile unsigned naming_counter;
+};
+
+/* Reader-Writer Lock request queue memeber definition */
+struct request {
+    status_t type;
+    struct reader_q *readers;
+    struct thread *writer;
+    struct cv *req_cv;
+    struct lock *req_cv_lock;
+    struct request *next;
+};
+
+struct reader_q {
+    struct thread_ll *head;
+    struct thread_ll *tail;
+    volatile unsigned size;
+};
+
+struct thread_ll {
+    struct thread *t;
+    struct thread_ll *next;
 };
 
 struct rwlock *rwlock_create(const char *);
@@ -173,5 +216,18 @@ void rwlock_acquire_read(struct rwlock *);
 void rwlock_release_read(struct rwlock *);
 void rwlock_acquire_write(struct rwlock *);
 void rwlock_release_write(struct rwlock *);
+
+/* custom functions */
+void loose_cv_wait(struct cv *, struct lock *);
+
+struct reader_q *reader_q_create(void);
+void reader_q_destroy(struct reader_q *);
+void reader_q_insert(struct reader_q *, struct thread *);
+void reader_q_remove(struct reader_q *, struct thread *);
+unsigned int digits(unsigned int);
+void get_req_names(unsigned int, char **, char **);
+bool rwlock_do_i_hold_writer(struct rwlock *);
+bool rwlock_do_i_hold_reader(struct rwlock *);
+void request_q_insert(struct rwlock *, status_t, struct thread *);
 
 #endif /* _SYNCH_H_ */

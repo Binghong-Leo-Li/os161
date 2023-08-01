@@ -263,7 +263,7 @@ lock_do_i_hold(struct lock *lock)
 
 ////////////////////////////////////////////////////////////
 //
-// CV
+// CV.
 
 struct cv *
 cv_create(const char *name)
@@ -320,6 +320,25 @@ cv_wait(struct cv *cv, struct lock *lock)
 }
 
 void
+loose_cv_wait(struct cv *cv, struct lock *lock)
+{
+    // Write this
+    // (void)cv;   // suppress warning until code gets written
+    // (void)lock; // suppress warning until code gets written
+
+    KASSERT(cv);
+    KASSERT(lock_do_i_hold(lock));
+
+    // it is fine to release the lock then go to sleep, because we aren't doing
+    // anything useful anyway
+    lock_release(lock);
+    spinlock_acquire(&lock->lk_lock);
+    loose_wchan_sleep(lock->lk_wchan, &lock->lk_lock);
+
+    // run concurrently, go wild! as the lock would be destroyed upon usage
+}
+
+void
 cv_signal(struct cv *cv, struct lock *lock)
 {
     // Write this
@@ -347,4 +366,536 @@ cv_broadcast(struct cv *cv, struct lock *lock)
     spinlock_acquire(&lock->lk_lock);
     wchan_wakeall(lock->lk_wchan, &lock->lk_lock);
     spinlock_release(&lock->lk_lock);
+}
+
+////////////////////////////////////////////////////////////
+//
+// Reader-Writeer Lock.
+
+struct rwlock *
+rwlock_create(const char *name)
+{
+    struct rwlock *rwlock;
+
+    rwlock = kmalloc(sizeof(*rwlock));
+    if (rwlock == NULL) {
+        return NULL;
+    }
+
+    rwlock->rwlock_name = kstrdup(name);
+    if (rwlock->rwlock_name == NULL) {
+        kfree(rwlock);
+        return NULL;
+    }
+
+    // intialize the lock that protects the counts for rwlock
+    rwlock->lock = lock_create(name);
+    if (rwlock->lock == NULL) {
+        kfree(rwlock->rwlock_name);
+        kfree(rwlock);
+        return NULL;
+    }
+
+    // all other fields should have initial values (0 or NULL, FREE)
+    rwlock->status = FREE;
+    rwlock->total_num_writers = 0;
+    rwlock->active_readers = NULL;
+    rwlock->active_writer = NULL;
+    rwlock->req_head = NULL;
+    rwlock->req_tail = NULL;
+
+    rwlock->naming_counter = 0;
+
+    return rwlock;
+}
+
+void
+rwlock_destroy(struct rwlock *rwlock)
+{
+    KASSERT(rwlock);
+    KASSERT(rwlock->total_num_writers == 0);
+    KASSERT(rwlock->status == FREE);
+    KASSERT(!rwlock->req_head);
+    KASSERT(!rwlock->req_tail);
+
+    lock_destroy(rwlock->lock);
+    kfree(rwlock->rwlock_name);
+    kfree(rwlock);
+}
+
+void
+rwlock_acquire_read(struct rwlock *rwlock)
+{
+    KASSERT(rwlock);
+
+    lock_acquire(rwlock->lock);
+
+    KASSERT(
+        !rwlock_do_i_hold_reader(rwlock)); // should not acquire multiple times
+
+    switch (rwlock->status) {
+    case FREE:
+        // easy, just put it into the active readers
+        KASSERT(!rwlock->active_readers);
+        KASSERT(!rwlock->active_writer);
+        rwlock->status = READ;
+        rwlock->active_readers = reader_q_create();
+        reader_q_insert(rwlock->active_readers, curthread);
+        break;
+
+    case READ:
+        /* if no writers waiting, MUST BE READ, and no reqeust waiting */
+        if (rwlock->total_num_writers == 0) {
+            KASSERT(rwlock->active_readers);
+            KASSERT(!rwlock->req_head);
+            KASSERT(!rwlock->req_tail);
+            KASSERT(!rwlock->active_writer);
+
+            // simply insert the reader into the active readers
+            reader_q_insert(rwlock->active_readers, curthread);
+            break;
+        }
+
+    case WRITE:
+        // the handling is surprisingly the same
+
+        // Sanity Check
+        KASSERT(
+            (!(rwlock->total_num_writers == 0) && (rwlock->status == WRITE)));
+
+        /* there's some writer **waiting**, or the first one is a writer */
+
+        if (rwlock->req_tail->type == READ) {
+            /* last request is read, just add on to the list, then wait on cv */
+            lock_acquire(rwlock->req_tail->req_cv_lock);
+            reader_q_insert(rwlock->req_tail->readers, curthread);
+            lock_release(rwlock->lock);
+            loose_cv_wait(rwlock->req_tail->req_cv,
+                          rwlock->req_tail->req_cv_lock);
+            return;
+        } else if (rwlock->req_tail->type == WRITE) {
+            /* last req is write, need to add a new READ req */
+            request_q_insert(rwlock, READ, curthread);
+            return;
+        }
+
+        // honestly shouldn't be here
+        panic("why am I here? [1]\n");
+    }
+
+    lock_release(rwlock->lock);
+}
+
+void
+rwlock_acquire_write(struct rwlock *rwlock)
+{
+    KASSERT(rwlock);
+
+    lock_acquire(rwlock->lock);
+
+    KASSERT(
+        !rwlock_do_i_hold_writer(rwlock)); // should not acquire multiple times
+
+    switch (rwlock->status) {
+    case FREE:
+        // easy, just put it into the active readers
+        KASSERT(!rwlock->active_readers);
+        KASSERT(!rwlock->active_writer);
+        rwlock->status = WRITE;
+        rwlock->active_writer = curthread;
+        rwlock->total_num_writers++;
+        break;
+
+    case READ:
+    case WRITE:
+        // really doesn't matter, as needs to create a new request anyway
+        request_q_insert(rwlock, WRITE, curthread);
+        return;
+    }
+
+    lock_release(rwlock->lock);
+}
+
+void
+rwlock_release_read(struct rwlock *rwlock)
+{
+    KASSERT(rwlock);
+    lock_acquire(rwlock->lock);
+
+    KASSERT(rwlock_do_i_hold_reader(rwlock));
+    KASSERT(rwlock->status == READ);
+
+    reader_q_remove(rwlock->active_readers, curthread);
+
+    /* CASE: if not on to next request, then don't need to do more */
+    if (rwlock->active_readers->size != 0) {
+        lock_release(rwlock->lock);
+        return;
+    }
+
+    // otherwise this request should be removed, and the next request should be
+    // processed
+
+    /* CASE: no pending requests */
+    if (rwlock->req_head == NULL || rwlock->req_tail == NULL ||
+        rwlock->total_num_writers == 0) {
+        KASSERT(!rwlock->req_head);
+        KASSERT(!rwlock->req_tail);
+        KASSERT(rwlock->total_num_writers == 0);
+
+        // update the current state to be free
+        rwlock->status = FREE;
+
+        lock_release(rwlock->lock);
+        return;
+    }
+
+    // TODO: DUPLICATE CODE
+    /* CASE: has pending requests */
+    struct request *pending = rwlock->req_head;
+
+    /*      one last pending request */
+    if (rwlock->req_head == rwlock->req_tail)
+        rwlock->req_tail = NULL;
+
+    rwlock->req_head = rwlock->req_head->next;
+    rwlock->status = pending->type;
+    pending->next = NULL;
+
+    // now we deal with the pending request
+    switch (pending->type) {
+    case READ:
+        rwlock->active_readers = pending->readers;
+        break;
+    case WRITE:
+        rwlock->active_writer = pending->writer;
+        break;
+    default:
+        panic("why am I here? [2]\n");
+    }
+
+    // now wake up all the waiting requests, and free the cv afterwards
+    lock_acquire(pending->req_cv_lock);
+    cv_broadcast(pending->req_cv, pending->req_cv_lock);
+    lock_release(pending->req_cv_lock);
+
+    // now can safely destory the cv and the lock?
+    cv_destroy(pending->req_cv);
+    lock_destroy(pending->req_cv_lock);
+
+    // now go wild!
+    lock_release(rwlock->lock);
+}
+
+void
+rwlock_release_write(struct rwlock *rwlock)
+{
+    KASSERT(rwlock);
+    lock_acquire(rwlock->lock);
+
+    KASSERT(rwlock_do_i_hold_writer(rwlock));
+    KASSERT(rwlock->status == WRITE);
+
+    rwlock->total_num_writers--;
+    rwlock->active_writer = NULL;
+
+    /* no more pending requests, just free now */
+    if (rwlock->req_head == NULL || rwlock->req_tail == NULL) {
+        KASSERT(!rwlock->req_head);
+        KASSERT(!rwlock->req_tail);
+
+        KASSERT(rwlock->total_num_writers == 0);
+
+        rwlock->status = FREE;
+        lock_release(rwlock->lock);
+        return;
+    }
+
+    /* doesn't matter what the next request type is, all want to
+     *  1) move the pending requests' readers/writer to active
+     *  2) clean up the remains
+     */
+
+    // TODO: DUPLICATE CODE
+    struct request *pending = rwlock->req_head;
+
+    /* one last pending request */
+    if (rwlock->req_head == rwlock->req_tail)
+        rwlock->req_tail = NULL;
+
+    rwlock->req_head = rwlock->req_head->next;
+    rwlock->status = pending->type;
+    pending->next = NULL;
+
+    // now we deal with the pending request
+    switch (pending->type) {
+    case READ:
+        rwlock->active_readers = pending->readers;
+        break;
+    case WRITE:
+        rwlock->active_writer = pending->writer;
+        break;
+    default:
+        panic("why am I here? [3]\n");
+    }
+
+    // now wake up all the waiting requests, and free the cv afterwards
+    lock_acquire(pending->req_cv_lock);
+    cv_broadcast(pending->req_cv, pending->req_cv_lock);
+    lock_release(pending->req_cv_lock);
+
+    // now can safely destory the cv and the lock?
+    cv_destroy(pending->req_cv);
+    lock_destroy(pending->req_cv_lock);
+
+    // now go wild!
+    lock_release(rwlock->lock);
+}
+
+/********** helper methods for reader-writer lock **********/
+
+struct reader_q *
+reader_q_create()
+{
+    struct reader_q *rq = kmalloc(sizeof(*rq));
+    KASSERT(rq);
+    rq->head = NULL;
+    rq->tail = NULL;
+    rq->size = 0;
+    return rq;
+}
+
+void
+reader_q_destroy(struct reader_q *rq)
+{
+    KASSERT(!rq->head);
+    KASSERT(!rq->tail);
+    KASSERT(rq->size == 0);
+    kfree(rq);
+}
+
+void
+reader_q_insert(struct reader_q *rq, struct thread *t_to_insert)
+{
+    KASSERT(rq);
+    KASSERT(t_to_insert);
+
+    // creating the link-list element
+    struct thread_ll *to_insert = kmalloc(sizeof(*to_insert));
+    KASSERT(to_insert);
+    to_insert->t = t_to_insert;
+    to_insert->next = NULL;
+
+    // case rq is empty
+    if (rq->size == 0 || rq->head == NULL || rq->tail == NULL) {
+        KASSERT(!rq->head);
+        KASSERT(!rq->tail);
+        KASSERT(rq->size == 0);
+
+        rq->head = to_insert;
+        rq->tail = to_insert;
+        (rq->size)++;
+
+        return;
+    }
+
+    // case rq only has one element
+    if (rq->size == 1 || rq->head == rq->tail) {
+        KASSERT(rq->head);
+        KASSERT(rq->tail);
+        KASSERT(rq->head == rq->tail);
+        KASSERT(rq->size == 1);
+
+        rq->head->next = to_insert;
+        rq->tail = to_insert;
+        (rq->size)++;
+
+        return;
+    }
+
+    // normal case
+    rq->tail->next = to_insert;
+    rq->tail = rq->tail->next;
+    (rq->size)++;
+
+    return;
+}
+
+void
+reader_q_remove(struct reader_q *rq, struct thread *t_to_remove)
+{
+    KASSERT(rq);
+    KASSERT(rq->head);
+    KASSERT(rq->tail);
+    KASSERT(rq->size > 0);
+
+    struct thread_ll *cur = rq->head;
+    struct thread_ll *prev = NULL;
+    while (cur) {
+        // found
+        if (cur->t == t_to_remove) {
+            if (prev == NULL) {
+                // cur is the head
+                KASSERT(cur == rq->head);
+                rq->head = rq->head->next;
+                (rq->size)--;
+
+                // have to reset tail as well, if now rq is empty
+                if (rq->size == 0)
+                    rq->tail = NULL;
+
+                // free the cur/remove
+                cur->next = NULL;
+                kfree(cur);
+                return;
+            }
+
+            prev->next = cur->next;
+            (rq->size)--;
+
+            cur->next = NULL;
+            kfree(cur);
+            return;
+        }
+
+        // proceed to the next element
+        prev = cur;
+        cur = cur->next;
+    }
+
+    // should not get here, which would mean we are removing something that
+    // isn't in the list at the first place
+    panic("reader_q_remove failed!\n");
+}
+
+unsigned int
+digits(unsigned int num)
+{
+    unsigned int counter = 0;
+    while (num) {
+        num /= 10;
+        counter++;
+    }
+    return counter;
+}
+
+void
+get_req_names(unsigned int num, char **cv_name, char **lock_name)
+{
+    unsigned int length = digits(num);
+    *cv_name = kmalloc(length + 8 + 3 + 1);
+    KASSERT(cv_name);
+    *lock_name = kmalloc(length + 8 + 5 + 1);
+    KASSERT(lock_name);
+
+    strcpy(*cv_name, "request_cv ");
+    strcpy(*lock_name, "request_lock ");
+    for (unsigned int i = 0; i < length; i++) {
+        (*cv_name)[length + 8 + 3 - i - 1] = num % 10 + '0';
+        (*lock_name)[length + 8 + 5 - i - 1] = num % 10 + '0';
+        num /= 10;
+    }
+    (*cv_name)[length + 8 + 3] = '\0';
+    (*lock_name)[length + 8 + 5] = '\0';
+}
+
+bool
+rwlock_do_i_hold_writer(struct rwlock *rwlock)
+{
+    KASSERT(rwlock);
+    KASSERT(lock_do_i_hold(rwlock->lock));
+    KASSERT(rwlock->lock->lk_holder == curthread);
+
+    return (curthread == rwlock->active_writer);
+}
+
+bool
+rwlock_do_i_hold_reader(struct rwlock *rwlock)
+{
+    KASSERT(rwlock);
+    KASSERT(lock_do_i_hold(rwlock->lock));
+    KASSERT(rwlock->lock->lk_holder == curthread);
+
+    struct reader_q *rq;
+    struct thread_ll *cur;
+
+    // if both values are non-null
+    if ((rq = rwlock->active_readers) && (cur = rq->head)) {
+        while (cur) {
+            if (cur->t == curthread)
+                return true;
+            cur = cur->next;
+        }
+    }
+
+    return false;
+}
+
+/* CARE: Releases the rwlock and waits on cv, should return immediately after */
+void
+request_q_insert(struct rwlock *rwlock, status_t status, struct thread *t)
+{
+    KASSERT(rwlock);
+    KASSERT(lock_do_i_hold(rwlock->lock));
+
+    // request creation
+    struct request *new_req = kmalloc(sizeof(*new_req));
+    KASSERT(new_req);
+    new_req->type = status;
+    new_req->next = NULL;
+    new_req->readers = NULL;
+    new_req->writer = NULL;
+
+    char *req_cv_name, *req_cv_lock_name;
+    get_req_names(++(rwlock->naming_counter), &req_cv_name, &req_cv_lock_name);
+    new_req->req_cv = cv_create(req_cv_name);
+    KASSERT(new_req->req_cv);
+    new_req->req_cv_lock = lock_create(req_cv_lock_name);
+    KASSERT(new_req->req_cv_lock);
+    kfree(req_cv_name);
+    kfree(req_cv_lock_name);
+
+    lock_acquire(new_req->req_cv_lock);
+    switch (status) {
+    case READ:
+        new_req->readers = reader_q_create();
+        reader_q_insert(new_req->readers, t);
+        break;
+
+    case WRITE:
+        new_req->writer = t;
+        rwlock->total_num_writers++;
+        break;
+
+    default:
+        panic("why am I here? [4]\n");
+    }
+
+    // holding on to the request lock, actually add the request to the request
+    // list, then wait on the cv
+
+    /* case for empty request list */
+    if (rwlock->req_head == NULL || rwlock->req_tail == NULL) {
+        KASSERT(!rwlock->req_head);
+        KASSERT(!rwlock->req_tail);
+
+        rwlock->req_head = new_req;
+        rwlock->req_tail = new_req;
+    }
+
+    /* case for only one element in the request list */
+    else if (rwlock->req_head == rwlock->req_tail) {
+        rwlock->req_head->next = new_req;
+        rwlock->req_tail = new_req;
+    }
+
+    /* normal case, in the middle */
+    else {
+        rwlock->req_tail->next = new_req;
+        rwlock->req_tail = new_req;
+    }
+
+    // wait on the cv
+    lock_release(rwlock->lock);
+    loose_cv_wait(new_req->req_cv, new_req->req_cv_lock);
 }

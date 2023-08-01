@@ -76,5 +76,7 @@ void wchan_sleep(struct wchan *wc, struct spinlock *lk);
 void wchan_wakeone(struct wchan *wc, struct spinlock *lk);
 void wchan_wakeall(struct wchan *wc, struct spinlock *lk);
 
+/* custom functions */
+void loose_wchan_sleep(struct wchan *, struct spinlock *);
 
 #endif /* _WCHAN_H_ */
