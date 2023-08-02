@@ -46,8 +46,6 @@ extern struct lock *testlock;
 // global variables
 static struct semaphore *male_sem;
 static struct semaphore *female_sem;
-static struct semaphore *matchmaker_sem_male;
-static struct semaphore *matchmaker_sem_female;
 static struct semaphore *matchmaker_sem_male_done;
 static struct semaphore *matchmaker_sem_female_done;
 /*
@@ -59,8 +57,6 @@ whalemating_init()
 {
     male_sem = sem_create("male sem", 0);
     female_sem = sem_create("female sem", 0);
-    matchmaker_sem_male = sem_create("match_maker sem", 0);
-    matchmaker_sem_female = sem_create("match_maker sem", 0);
     matchmaker_sem_male_done = sem_create("match_maker sem", 0);
     matchmaker_sem_female_done = sem_create("match_maker sem", 0);
     return;
@@ -75,8 +71,6 @@ whalemating_cleanup()
 {
     sem_destroy(male_sem);
     sem_destroy(female_sem);
-    sem_destroy(matchmaker_sem_male);
-    sem_destroy(matchmaker_sem_female);
     sem_destroy(matchmaker_sem_male_done);
     sem_destroy(matchmaker_sem_female_done);
     return;
@@ -93,7 +87,6 @@ male(uint32_t index)
 
     male_start(index);
     V(male_sem);
-    V(matchmaker_sem_male);
     P(matchmaker_sem_male_done);
     male_end(index);
     return;
@@ -110,7 +103,6 @@ female(uint32_t index)
 
     female_start(index);
     V(female_sem);
-    V(matchmaker_sem_female);
     P(matchmaker_sem_female_done);
     female_end(index);
     return;
@@ -125,14 +117,12 @@ matchmaker(uint32_t index)
      * when appropriate.
      */
 
-    P(matchmaker_sem_male);
-    P(matchmaker_sem_female);
     matchmaker_start(index);
     P(male_sem);
     P(female_sem);
-    matchmaker_end(index);
     V(matchmaker_sem_male_done);
     V(matchmaker_sem_female_done);
+    matchmaker_end(index);
 
     return;
 }
