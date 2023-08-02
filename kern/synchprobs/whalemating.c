@@ -40,12 +40,30 @@
 #include <test.h>
 #include <synch.h>
 
+// static variables from the test file
+extern struct lock *testlock;
+
+// global variables
+static struct semaphore *male_sem;
+static struct semaphore *female_sem;
+static struct semaphore *matchmaker_sem_male;
+static struct semaphore *matchmaker_sem_female;
+static struct semaphore *matchmaker_sem_male_done;
+static struct semaphore *matchmaker_sem_female_done;
 /*
  * Called by the driver during initialization.
  */
 
-void whalemating_init() {
-	return;
+void
+whalemating_init()
+{
+    male_sem = sem_create("male sem", 0);
+    female_sem = sem_create("female sem", 0);
+    matchmaker_sem_male = sem_create("match_maker sem", 0);
+    matchmaker_sem_female = sem_create("match_maker sem", 0);
+    matchmaker_sem_male_done = sem_create("match_maker sem", 0);
+    matchmaker_sem_female_done = sem_create("match_maker sem", 0);
+    return;
 }
 
 /*
@@ -53,39 +71,68 @@ void whalemating_init() {
  */
 
 void
-whalemating_cleanup() {
-	return;
+whalemating_cleanup()
+{
+    sem_destroy(male_sem);
+    sem_destroy(female_sem);
+    sem_destroy(matchmaker_sem_male);
+    sem_destroy(matchmaker_sem_female);
+    sem_destroy(matchmaker_sem_male_done);
+    sem_destroy(matchmaker_sem_female_done);
+    return;
 }
 
 void
 male(uint32_t index)
 {
-	(void)index;
-	/*
-	 * Implement this function by calling male_start and male_end when
-	 * appropriate.
-	 */
-	return;
+    // (void)index;
+    /*
+     * Implement this function by calling male_start and male_end when
+     * appropriate.
+     */
+
+    male_start(index);
+    V(male_sem);
+    V(matchmaker_sem_male);
+    P(matchmaker_sem_male_done);
+    male_end(index);
+    return;
 }
 
 void
 female(uint32_t index)
 {
-	(void)index;
-	/*
-	 * Implement this function by calling female_start and female_end when
-	 * appropriate.
-	 */
-	return;
+    // (void)index;
+    /*
+     * Implement this function by calling female_start and female_end when
+     * appropriate.
+     */
+
+    female_start(index);
+    V(female_sem);
+    V(matchmaker_sem_female);
+    P(matchmaker_sem_female_done);
+    female_end(index);
+    return;
 }
 
 void
 matchmaker(uint32_t index)
 {
-	(void)index;
-	/*
-	 * Implement this function by calling matchmaker_start and matchmaker_end
-	 * when appropriate.
-	 */
-	return;
+    // (void)index;
+    /*
+     * Implement this function by calling matchmaker_start and matchmaker_end
+     * when appropriate.
+     */
+
+    P(matchmaker_sem_male);
+    P(matchmaker_sem_female);
+    matchmaker_start(index);
+    P(male_sem);
+    P(female_sem);
+    matchmaker_end(index);
+    V(matchmaker_sem_male_done);
+    V(matchmaker_sem_female_done);
+
+    return;
 }
