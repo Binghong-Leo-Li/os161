@@ -69,50 +69,128 @@
 #include <test.h>
 #include <synch.h>
 
+// custom global variables
+static struct semaphore *zero;
+static struct semaphore *one;
+static struct semaphore *two;
+static struct semaphore *three;
+static struct semaphore *limit;
+
+// forward definition
+struct semaphore *get_quadrant(uint32_t);
+
 /*
  * Called by the driver during initialization.
  */
 
 void
-stoplight_init() {
-	return;
+stoplight_init()
+{
+    zero = sem_create("quadrant zero", 1);
+    one = sem_create("quadrant one", 1);
+    two = sem_create("quadrant two", 1);
+    three = sem_create("quadrant three", 1);
+    limit = sem_create("quadrant limiter", 3);
+    return;
 }
 
 /*
  * Called by the driver during teardown.
  */
 
-void stoplight_cleanup() {
-	return;
+void
+stoplight_cleanup()
+{
+    sem_destroy(zero);
+    sem_destroy(one);
+    sem_destroy(two);
+    sem_destroy(three);
+    sem_destroy(limit);
+    return;
 }
 
 void
 turnright(uint32_t direction, uint32_t index)
 {
-	(void)direction;
-	(void)index;
-	/*
-	 * Implement this function.
-	 */
-	return;
+    // (void)direction;
+    // (void)index;
+    /*
+     * Implement this function.
+     */
+    P(limit);
+    P(get_quadrant(direction));
+    inQuadrant(direction, index);
+    leaveIntersection(index);
+    V(get_quadrant(direction));
+    V(limit);
+    return;
 }
 void
 gostraight(uint32_t direction, uint32_t index)
 {
-	(void)direction;
-	(void)index;
-	/*
-	 * Implement this function.
-	 */
-	return;
+    // (void)direction;
+    // (void)index;
+    /*
+     * Implement this function.
+     */
+
+    P(limit);
+    P(get_quadrant(direction));
+    inQuadrant(direction, index);
+    P(get_quadrant((direction - 1) % 4));
+    inQuadrant((direction - 1) % 4, index);
+    V(get_quadrant(direction));
+    leaveIntersection(index);
+    V(get_quadrant((direction - 1) % 4));
+    V(limit);
+
+    return;
 }
 void
 turnleft(uint32_t direction, uint32_t index)
 {
-	(void)direction;
-	(void)index;
-	/*
-	 * Implement this function.
-	 */
-	return;
+    // (void)direction;
+    // (void)index;
+    /*
+     * Implement this function.
+     */
+
+    P(limit);
+    P(get_quadrant(direction));
+    inQuadrant(direction, index);
+    P(get_quadrant((direction - 1) % 4));
+    inQuadrant((direction - 1) % 4, index);
+    V(get_quadrant(direction));
+    P(get_quadrant((direction - 2) % 4));
+    inQuadrant((direction - 2) % 4, index);
+    V(get_quadrant((direction - 1) % 4));
+    leaveIntersection(index);
+    V(get_quadrant((direction - 2) % 4));
+    V(limit);
+    return;
+}
+
+// helper methods
+struct semaphore *
+get_quadrant(uint32_t num)
+{
+    struct semaphore *res;
+    switch (num) {
+    case 0:
+        res = zero;
+        break;
+    case 1:
+        res = one;
+        break;
+    case 2:
+        res = two;
+        break;
+    case 3:
+        res = three;
+        break;
+    default:
+        panic("unhandled direction, should not exist");
+    }
+
+    return res;
 }
