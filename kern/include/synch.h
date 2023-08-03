@@ -233,4 +233,21 @@ bool rwlock_do_i_hold_writer(struct rwlock *);
 bool rwlock_do_i_hold_reader(struct rwlock *);
 void request_q_insert(struct rwlock *, status_t, struct thread *);
 
+/* custom struct for direction cycle, for buffulo intersection problem */
+// direction cycle, or a distributed queue (forward definition)
+struct direction_cycle {
+    uint32_t direction;
+    volatile unsigned num_cars;
+    struct cv *cv;
+    struct lock *cv_lock;
+    struct direction_cycle *next;
+};
+struct direction_cycle *get_direction_cycle(uint32_t);
+struct direction_cycle *direction_cycle_create(uint32_t, const char *,
+                                               const char *);
+void direction_cycle_destroy(struct direction_cycle *);
+void direction_cycle_wait(struct direction_cycle *);
+void direction_cycle_signal(struct direction_cycle *,
+                            struct direction_cycle **);
+
 #endif /* _SYNCH_H_ */

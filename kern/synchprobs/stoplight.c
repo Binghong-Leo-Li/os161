@@ -63,21 +63,37 @@
  * functions in synchprobs.c to record their progress.
  */
 
+/* naive implementation, 10.8-11.8s */
+/* "supposedly no starvation" implementation, 11.5-12.5s, acceptable */
+
 #include <types.h>
 #include <lib.h>
 #include <thread.h>
 #include <test.h>
 #include <synch.h>
 
-// custom global variables
+#define LIMIT 3
+/* forward definition */
+struct semaphore *get_quadrant(uint32_t);
+
+/**************** custom global variables ****************/
+
+// quadrant semaphores
 static struct semaphore *zero;
 static struct semaphore *one;
 static struct semaphore *two;
 static struct semaphore *three;
+// intersection capacity limit
 static struct semaphore *limit;
 
-// forward definition
-struct semaphore *get_quadrant(uint32_t);
+// pointer to the "current" direction cycle
+static struct direction_cycle *cur;
+
+// distributed queue data structures
+static struct direction_cycle *zero_dc;
+static struct direction_cycle *one_dc;
+static struct direction_cycle *two_dc;
+static struct direction_cycle *three_dc;
 
 /*
  * Called by the driver during initialization.
@@ -90,7 +106,20 @@ stoplight_init()
     one = sem_create("quadrant one", 1);
     two = sem_create("quadrant two", 1);
     three = sem_create("quadrant three", 1);
-    limit = sem_create("quadrant limiter", 3);
+    limit = sem_create("quadrant limiter", LIMIT);
+
+    zero_dc = direction_cycle_create(0, "dc_cv 0", "dc_cv_lock 0");
+    one_dc = direction_cycle_create(1, "dc_cv 1", "dc_cv_lock 1");
+    two_dc = direction_cycle_create(2, "dc_cv 2", "dc_cv_lock 2");
+    three_dc = direction_cycle_create(3, "dc_cv 3", "dc_cv_lock 3");
+
+    zero_dc->next = one_dc;
+    one_dc->next = two_dc;
+    two_dc->next = three_dc;
+    three_dc->next = zero_dc;
+
+    cur = zero_dc;
+
     return;
 }
 
@@ -106,6 +135,14 @@ stoplight_cleanup()
     sem_destroy(two);
     sem_destroy(three);
     sem_destroy(limit);
+
+    cur = NULL;
+
+    direction_cycle_destroy(zero_dc);
+    direction_cycle_destroy(one_dc);
+    direction_cycle_destroy(two_dc);
+    direction_cycle_destroy(three_dc);
+
     return;
 }
 
@@ -117,14 +154,25 @@ turnright(uint32_t direction, uint32_t index)
     /*
      * Implement this function.
      */
+
+    struct direction_cycle *my_dc = get_direction_cycle(direction);
+    struct direction_cycle *next;
+
+    direction_cycle_wait(my_dc);
     P(limit);
+
+    // core intersection handling code
     P(get_quadrant(direction));
     inQuadrant(direction, index);
     leaveIntersection(index);
     V(get_quadrant(direction));
+
+    direction_cycle_signal(my_dc, &next);
     V(limit);
+
     return;
 }
+
 void
 gostraight(uint32_t direction, uint32_t index)
 {
@@ -134,7 +182,13 @@ gostraight(uint32_t direction, uint32_t index)
      * Implement this function.
      */
 
+    struct direction_cycle *my_dc = get_direction_cycle(direction);
+    struct direction_cycle *next;
+
+    direction_cycle_wait(my_dc);
     P(limit);
+
+    // core intersection handling code
     P(get_quadrant(direction));
     inQuadrant(direction, index);
     P(get_quadrant((direction - 1) % 4));
@@ -142,10 +196,13 @@ gostraight(uint32_t direction, uint32_t index)
     V(get_quadrant(direction));
     leaveIntersection(index);
     V(get_quadrant((direction - 1) % 4));
+
+    direction_cycle_signal(my_dc, &next);
     V(limit);
 
     return;
 }
+
 void
 turnleft(uint32_t direction, uint32_t index)
 {
@@ -155,7 +212,13 @@ turnleft(uint32_t direction, uint32_t index)
      * Implement this function.
      */
 
+    struct direction_cycle *my_dc = get_direction_cycle(direction);
+    struct direction_cycle *next;
+
+    direction_cycle_wait(my_dc);
     P(limit);
+
+    // core intersection handling code
     P(get_quadrant(direction));
     inQuadrant(direction, index);
     P(get_quadrant((direction - 1) % 4));
@@ -166,7 +229,10 @@ turnleft(uint32_t direction, uint32_t index)
     V(get_quadrant((direction - 1) % 4));
     leaveIntersection(index);
     V(get_quadrant((direction - 2) % 4));
+
+    direction_cycle_signal(my_dc, &next);
     V(limit);
+
     return;
 }
 
@@ -193,4 +259,88 @@ get_quadrant(uint32_t num)
     }
 
     return res;
+}
+
+/*********** direction_cycle functions  ***********/
+
+struct direction_cycle *
+direction_cycle_create(uint32_t direction, const char *cv_name,
+                       const char *cv_lock_name)
+{
+    struct direction_cycle *to_create = kmalloc(sizeof(*to_create));
+    to_create->direction = direction;
+    to_create->num_cars = 0;
+    to_create->cv = cv_create(cv_name);
+    to_create->cv_lock = lock_create(cv_lock_name);
+    to_create->next = NULL;
+    return to_create;
+}
+
+void
+direction_cycle_destroy(struct direction_cycle *dc)
+{
+    cv_destroy(dc->cv);
+    lock_destroy(dc->cv_lock);
+    dc->next = NULL;
+    kfree(dc);
+}
+
+struct direction_cycle *
+get_direction_cycle(uint32_t num)
+{
+    struct direction_cycle *res;
+    switch (num) {
+    case 0:
+        res = zero_dc;
+        break;
+    case 1:
+        res = one_dc;
+        break;
+    case 2:
+        res = two_dc;
+        break;
+    case 3:
+        res = three_dc;
+        break;
+    default:
+        panic("unhandled direction, should not exist");
+    }
+
+    return res;
+}
+
+void
+direction_cycle_wait(struct direction_cycle *my_dc)
+{
+    lock_acquire(my_dc->cv_lock);
+    my_dc->num_cars++;
+    while (cur->num_cars == 0) {
+        cur = cur->next;
+    }
+    while (cur != my_dc) {
+        cv_wait(my_dc->cv, my_dc->cv_lock);
+        while (cur->num_cars == 0) {
+            cur = cur->next;
+        }
+    }
+    lock_release(my_dc->cv_lock);
+}
+
+void
+direction_cycle_signal(struct direction_cycle *my_dc,
+                       struct direction_cycle **next)
+{
+    lock_acquire(my_dc->cv_lock);
+    my_dc->num_cars--;
+    *next = my_dc->next;
+    while (*next != my_dc) {
+        if ((*next)->num_cars != 0)
+            break;
+        *next = (*next)->next;
+    }
+    lock_release(my_dc->cv_lock);
+
+    lock_acquire((*next)->cv_lock);
+    cv_broadcast((*next)->cv, (*next)->cv_lock);
+    lock_release((*next)->cv_lock);
 }
