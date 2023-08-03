@@ -65,6 +65,7 @@
 
 /* naive implementation, 10.8-11.8s */
 /* "supposedly no starvation" implementation, 11.5-12.5s, acceptable */
+// seems like performance degredation partly due to deadlock protection on
 
 #include <types.h>
 #include <lib.h>

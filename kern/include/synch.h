@@ -246,7 +246,12 @@ struct direction_cycle *get_direction_cycle(uint32_t);
 struct direction_cycle *direction_cycle_create(uint32_t, const char *,
                                                const char *);
 void direction_cycle_destroy(struct direction_cycle *);
+
+// the key to preventing startvation in theory
+
+/* wait until it is the specific dc's time */
 void direction_cycle_wait(struct direction_cycle *);
+/* inform what is the next dc to be run */
 void direction_cycle_signal(struct direction_cycle *,
                             struct direction_cycle **);
 
