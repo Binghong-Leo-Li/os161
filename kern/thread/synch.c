@@ -194,6 +194,7 @@ void
 lock_acquire(struct lock *lock)
 {
     KASSERT(lock != NULL);
+    KASSERT(!lock_do_i_hold(lock));
 
     /*
      * May not block in an interrupt handler.
@@ -203,21 +204,23 @@ lock_acquire(struct lock *lock)
      */
     KASSERT(curthread->t_in_interrupt == false);
 
+    /* Use the lock spinlock to protect the wchan as well. */
+    spinlock_acquire(&lock->lk_lock);
+
     /* Call this (atomically) before waiting for a lock */
     HANGMAN_WAIT(&curthread->t_hangman, &lock->lk_hangman);
 
-    /* Use the lock spinlock to protect the wchan as well. */
-    spinlock_acquire(&lock->lk_lock);
     while (lock->lk_holder) {
+
         wchan_sleep(lock->lk_wchan, &lock->lk_lock);
     }
     lock->lk_holder = curthread;
     KASSERT(lock->lk_holder);
 
-    // (void)lock; // suppress warning until code gets written
-
     /* Call this (atomically) once the lock is acquired */
     HANGMAN_ACQUIRE(&curthread->t_hangman, &lock->lk_hangman);
+
+    // (void)lock; // suppress warning until code gets written
 
     spinlock_release(&lock->lk_lock);
 }
@@ -236,6 +239,7 @@ lock_release(struct lock *lock)
 
     lock->lk_holder = NULL;
     KASSERT(!lock->lk_holder);
+
     wchan_wakeone(lock->lk_wchan, &lock->lk_lock);
 
     /* Call this (atomically) when the lock is released */
@@ -251,7 +255,7 @@ lock_do_i_hold(struct lock *lock)
 {
     // Write this
 
-    KASSERT(lock);
+    // KASSERT(lock);
 
     // (void)lock;  // suppress warning until code gets written
 
