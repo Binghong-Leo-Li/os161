@@ -173,7 +173,6 @@ struct rwlock {
 
     // the main datastructure, the requests queue
     struct request *req_head;
-    struct request *req_tail;
 
     // misc
     volatile unsigned naming_counter;
@@ -191,7 +190,6 @@ struct request {
 
 struct reader_q {
     struct thread_ll *head;
-    struct thread_ll *tail;
     volatile unsigned size;
 };
 
@@ -229,6 +227,7 @@ void reader_q_insert(struct reader_q *, struct thread *);
 void reader_q_remove(struct reader_q *, struct thread *);
 unsigned int digits(unsigned int);
 void get_req_names(unsigned int, char **, char **);
+struct request *get_req_tail(struct request *);
 bool rwlock_do_i_hold_writer(struct rwlock *);
 bool rwlock_do_i_hold_reader(struct rwlock *);
 void request_q_insert(struct rwlock *, status_t, struct thread *);
