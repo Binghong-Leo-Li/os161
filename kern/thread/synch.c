@@ -480,16 +480,17 @@ rwlock_acquire_read(struct rwlock *rwlock)
         KASSERT((!(rwlock->total_num_writers == 0 && rwlock->status == WRITE)));
         /* there's some writer **waiting**, or the first one is a writer */
 
-        if (req_tail->type == READ) {
+        if (!req_tail || req_tail->type == WRITE) {
+            /* last req is write, or no pending request yet, need to add a new
+             * READ req */
+            request_q_insert(rwlock, READ, curthread);
+            return;
+        } else if (req_tail->type == READ) {
             /* last request is read, just add on to the list, then wait on cv */
             lock_acquire(req_tail->req_cv_lock);
             reader_q_insert(req_tail->readers, curthread);
             lock_release(rwlock->lock);
             loose_cv_wait(req_tail->req_cv, req_tail->req_cv_lock);
-            return;
-        } else if (req_tail->type == WRITE) {
-            /* last req is write, need to add a new READ req */
-            request_q_insert(rwlock, READ, curthread);
             return;
         }
 
